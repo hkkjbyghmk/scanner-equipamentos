@@ -125,6 +125,35 @@
       border-radius: 12px;
       overflow: hidden;
       border: 3px solid var(--primary);
+      min-height: 300px;
+      position: relative;
+    }
+    
+    #qr-reader div:first-child {
+      width: 100% !important;
+    }
+    
+    .scanner-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      z-index: 10;
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+    }
+    
+    .scanner-overlay i {
+      font-size: 64px;
+      margin-bottom: 20px;
     }
     
     .scanner-controls {
@@ -184,6 +213,12 @@
       display: flex;
       align-items: center;
       gap: 8px;
+    }
+    
+    .info-label::before {
+      content: "✓";
+      color: #4CAF50;
+      font-weight: bold;
     }
     
     .info-value {
@@ -506,6 +541,10 @@
       .history-icon {
         margin: 0 auto;
       }
+      
+      #qr-reader {
+        min-height: 250px;
+      }
     }
     
     /* Modo paisagem */
@@ -554,6 +593,21 @@
     .highlight {
       animation: highlight 2s ease;
     }
+    
+    /* Loading spinner */
+    .spinner {
+      display: inline-block;
+      width: 30px;
+      height: 30px;
+      border: 4px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
@@ -567,7 +621,21 @@
       <div class="section-title">
         <i class="fas fa-qrcode"></i> Scanner de Códigos
       </div>
-      <div id="qr-reader"></div>
+      
+      <div id="qr-reader">
+        <div class="scanner-overlay" id="scannerOverlay">
+          <i class="fas fa-camera"></i>
+          <h3 style="margin-bottom: 10px;">Permissão de Câmera Necessária</h3>
+          <p style="margin-bottom: 20px;">Clique no botão abaixo para permitir o acesso à câmera</p>
+          <button id="startCameraBtn" class="btn btn-primary">
+            <i class="fas fa-video"></i> Ativar Câmera
+          </button>
+          <p style="margin-top: 15px; font-size: 14px; opacity: 0.8;">
+            <i class="fas fa-info-circle"></i> A câmera é necessária para ler os códigos
+          </p>
+        </div>
+      </div>
+      
       <div class="scanner-status" id="scannerStatus">
         <i class="fas fa-camera"></i> Scanner ativo - Aponte para um código
       </div>
@@ -576,8 +644,8 @@
         <button id="toggleScannerBtn" class="btn btn-warning">
           <i class="fas fa-pause"></i> Pausar Scanner
         </button>
-        <button id="flashToggleBtn" class="btn btn-secondary">
-          <i class="fas fa-lightbulb"></i> Luz
+        <button id="cameraSelectBtn" class="btn btn-secondary">
+          <i class="fas fa-camera-retro"></i> Alterar Câmera
         </button>
       </div>
     </div>
@@ -788,20 +856,23 @@
 
     // Estado da aplicação
     const state = {
-      scannerActive: true,
-      flashActive: false,
+      scannerActive: false,
       currentEquipment: null,
       history: JSON.parse(localStorage.getItem('equipmentHistory')) || [],
       isScanning: false,
-      editMode: false
+      editMode: false,
+      cameras: [],
+      currentCameraId: null
     };
 
     // Elementos DOM
     const elements = {
       // Scanner
       scannerStatus: document.getElementById('scannerStatus'),
+      scannerOverlay: document.getElementById('scannerOverlay'),
+      startCameraBtn: document.getElementById('startCameraBtn'),
       toggleScannerBtn: document.getElementById('toggleScannerBtn'),
-      flashToggleBtn: document.getElementById('flashToggleBtn'),
+      cameraSelectBtn: document.getElementById('cameraSelectBtn'),
       
       // Notificação
       notification: document.getElementById('notification'),
@@ -1136,8 +1207,8 @@
       });
     }
 
-    // Funções do Scanner
-    async function onScanSuccess(decodedText) {
+    // Funções do Scanner - CORRIGIDAS
+    async function onScanSuccess(decodedText, decodedResult) {
       if (state.isScanning) return;
       state.isScanning = true;
       
@@ -1174,90 +1245,135 @@
     }
 
     function onScanFailure(error) {
-      console.warn("Erro no scanner:", error);
+      // Ignora erros comuns de "QR code não encontrado"
+      if (error && !error.toString().includes('NotFoundException')) {
+        console.warn("Erro no scanner:", error);
+      }
     }
 
+    // Função corrigida para iniciar o scanner
     async function startScanner() {
       try {
+        // Para qualquer scanner existente
         if (html5QrcodeScanner) {
-          await html5QrcodeScanner.clear();
+          await html5QrcodeScanner.clear().catch(() => {});
         }
         
+        // Configurações do scanner
         const config = {
           fps: 10,
           qrbox: { width: 250, height: 250 },
           rememberLastUsedCamera: true,
+          supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA],
           formatsToSupport: [
             Html5QrcodeSupportedFormats.QR_CODE,
             Html5QrcodeSupportedFormats.CODE_128,
             Html5QrcodeSupportedFormats.EAN_13,
             Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.CODE_39
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_93
           ]
         };
         
+        // Cria novo scanner
         html5QrcodeScanner = new Html5QrcodeScanner("qr-reader", config);
+        
+        // Inicia o scanner
         await html5QrcodeScanner.render(onScanSuccess, onScanFailure);
         
-        // Ativa flash se configurado
-        if (state.flashActive) {
-          await toggleFlash();
+        // Atualiza status
+        elements.scannerOverlay.style.display = 'none';
+        elements.scannerStatus.innerHTML = `<i class="fas fa-camera"></i> Scanner ativo - Aponte para um código`;
+        elements.scannerStatus.style.background = '#e3f2fd';
+        elements.scannerStatus.style.color = '#1976d2';
+        state.scannerActive = true;
+        
+        // Obtém lista de câmeras
+        try {
+          state.cameras = await Html5Qrcode.getCameras();
+          if (state.cameras.length > 1) {
+            elements.cameraSelectBtn.style.display = 'flex';
+          }
+        } catch (e) {
+          console.log("Não foi possível obter lista de câmeras:", e);
         }
+        
+        showNotification('Scanner ativado com sucesso!', 'success');
         
       } catch (error) {
         console.error("Erro ao iniciar scanner:", error);
-        showNotification('❌ Erro ao acessar a câmera. Verifique as permissões.', 'error');
+        
+        // Mostra mensagem de erro amigável
+        let errorMessage = '❌ Erro ao acessar a câmera. ';
+        
+        if (error.name === 'NotAllowedError') {
+          errorMessage += 'Permissão negada. Por favor, permita o acesso à câmera nas configurações do navegador.';
+        } else if (error.name === 'NotFoundError') {
+          errorMessage += 'Câmera não encontrada. Verifique se há uma câmera disponível.';
+        } else if (error.name === 'NotReadableError') {
+          errorMessage += 'Câmera não pode ser acessada. Pode estar sendo usada por outro aplicativo.';
+        } else {
+          errorMessage += `Detalhes: ${error.message}`;
+        }
+        
+        showNotification(errorMessage, 'error');
+        elements.scannerOverlay.style.display = 'flex';
+        elements.scannerStatus.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Scanner desativado - Permissão necessária`;
+        elements.scannerStatus.style.background = '#f8d7da';
+        elements.scannerStatus.style.color = '#721c24';
+        state.scannerActive = false;
       }
     }
 
+    // Função para parar scanner
     async function stopScanner() {
       try {
         if (html5QrcodeScanner) {
-          await html5QrcodeScanner.clear();
+          await html5QrcodeScanner.clear().catch(() => {});
           html5QrcodeScanner = null;
         }
+        state.scannerActive = false;
       } catch (error) {
         console.error("Erro ao parar scanner:", error);
       }
     }
 
-    async function toggleFlash() {
-      if (!html5QrcodeScanner) return;
+    // Alternar entre câmeras
+    async function switchCamera() {
+      if (!state.cameras || state.cameras.length < 2) {
+        showNotification('Apenas uma câmera disponível', 'info');
+        return;
+      }
       
       try {
-        const cameras = await Html5Qrcode.getCameras();
-        if (cameras && cameras.length > 0) {
-          state.flashActive = !state.flashActive;
-          
-          if (state.flashActive) {
-            await html5QrcodeScanner.applyVideoConstraints(cameras[0].id, {
-              advanced: [{ torch: true }]
-            });
-            elements.flashToggleBtn.innerHTML = '<i class="fas fa-lightbulb"></i> Luz (On)';
-            showNotification('Luz da câmera ativada', 'info');
-          } else {
-            await html5QrcodeScanner.applyVideoConstraints(cameras[0].id, {
-              advanced: [{ torch: false }]
-            });
-            elements.flashToggleBtn.innerHTML = '<i class="fas fa-lightbulb"></i> Luz (Off)';
-          }
-        }
+        // Para o scanner atual
+        await stopScanner();
+        
+        // Encontra a próxima câmera
+        const currentIndex = state.cameras.findIndex(cam => cam.id === state.currentCameraId);
+        const nextIndex = (currentIndex + 1) % state.cameras.length;
+        state.currentCameraId = state.cameras[nextIndex].id;
+        
+        // Reinicia o scanner com a nova câmera
+        await startScanner();
+        
+        showNotification(`Câmera alterada para: ${state.cameras[nextIndex].label || 'Câmera ' + (nextIndex + 1)}`, 'info');
       } catch (error) {
-        console.error("Erro ao controlar flash:", error);
+        console.error("Erro ao alternar câmera:", error);
+        showNotification('Erro ao alternar câmera', 'error');
       }
     }
 
+    // Toggle scanner (pausar/retomar)
     async function toggleScanner() {
       if (state.scannerActive) {
         await stopScanner();
-        state.scannerActive = false;
         elements.toggleScannerBtn.innerHTML = '<i class="fas fa-play"></i> Retomar Scanner';
         elements.scannerStatus.innerHTML = `<i class="fas fa-pause-circle"></i> Scanner pausado - Clique em "Retomar Scanner"`;
         elements.scannerStatus.style.background = '#fff3cd';
         elements.scannerStatus.style.color = '#856404';
         showNotification('Scanner pausado', 'info');
       } else {
-        state.scannerActive = true;
         await startScanner();
         elements.toggleScannerBtn.innerHTML = '<i class="fas fa-pause"></i> Pausar Scanner';
         showNotification('Scanner reativado', 'info');
@@ -1289,7 +1405,18 @@ Confiança: Marca (${EquipmentIdentifier.getConfidenceBadge(state.currentEquipme
         elements.copiarBtn.classList.add('pulse');
         setTimeout(() => elements.copiarBtn.classList.remove('pulse'), 500);
       } catch (err) {
-        showNotification('❌ Erro ao copiar. Tente novamente.', 'error');
+        // Fallback para navegadores mais antigos
+        const textArea = document.createElement('textarea');
+        textArea.value = texto;
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+          document.execCommand('copy');
+          showNotification('✅ Dados copiados! (método alternativo)', 'success');
+        } catch (fallbackErr) {
+          showNotification('❌ Erro ao copiar. Tente novamente.', 'error');
+        }
+        document.body.removeChild(textArea);
       }
     }
 
@@ -1320,12 +1447,10 @@ Confiança: Marca (${EquipmentIdentifier.getConfidenceBadge(state.currentEquipme
       // Carrega histórico
       updateHistoryDisplay();
       
-      // Inicia scanner
-      await startScanner();
-      
-      // Event Listeners
+      // Configura botões
+      elements.startCameraBtn.addEventListener('click', startScanner);
       elements.toggleScannerBtn.addEventListener('click', toggleScanner);
-      elements.flashToggleBtn.addEventListener('click', toggleFlash);
+      elements.cameraSelectBtn.addEventListener('click', switchCamera);
       elements.copiarBtn.addEventListener('click', copyToClipboard);
       elements.salvarBtn.addEventListener('click', () => {
         if (state.currentEquipment) {
@@ -1336,7 +1461,7 @@ Confiança: Marca (${EquipmentIdentifier.getConfidenceBadge(state.currentEquipme
       elements.limparBtn.addEventListener('click', clearAll);
       elements.historicoBtn.addEventListener('click', toggleHistory);
       
-      // Modo edição (simplificado)
+      // Modo edição
       elements.editarBtn.addEventListener('click', () => {
         if (state.currentEquipment) {
           const novaMarca = prompt("Editar Marca:", state.currentEquipment.marca.nome);
@@ -1349,23 +1474,40 @@ Confiança: Marca (${EquipmentIdentifier.getConfidenceBadge(state.currentEquipme
         }
       });
       
-      // Feedback inicial
-      showNotification('Sistema pronto! Aponte a câmera para um código de equipamento.', 'info');
+      // Verifica se já tem permissão de câmera
+      try {
+        // Tenta acessar a câmera para ver se já tem permissão
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        // Se chegou aqui, tem permissão
+        stream.getTracks().forEach(track => track.stop());
+        // Inicia o scanner automaticamente
+        await startScanner();
+      } catch (error) {
+        // Não tem permissão, mostra o overlay
+        showNotification('Clique no botão "Ativar Câmera" para começar', 'info');
+      }
       
       // Configura hotkeys
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') elements.historySection.classList.remove('active');
-        if (e.key === ' ' && e.target === document.body) e.preventDefault(); // Previne scroll com espaço
+        if (e.key === ' ' && e.target === document.body) e.preventDefault();
       });
     }
 
-    // Inicializa a aplicação
+    // Inicializa quando a página carrega
     document.addEventListener('DOMContentLoaded', init);
     
-    // Limpeza ao fechar
-    window.addEventListener('beforeunload', () => {
-      if (html5QrcodeScanner) {
-        stopScanner();
+    // Limpeza ao fechar a página
+    window.addEventListener('beforeunload', async () => {
+      await stopScanner();
+    });
+    
+    // Trata mudanças de visibilidade da página
+    document.addEventListener('visibilitychange', async () => {
+      if (document.hidden) {
+        await stopScanner();
+      } else if (state.scannerActive) {
+        setTimeout(startScanner, 500); // Pequeno delay para evitar conflitos
       }
     });
   </script>
